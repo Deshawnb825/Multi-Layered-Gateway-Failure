@@ -31,3 +31,39 @@ The presence of L2 reachability with L3 failure immediately ruled out physical/l
 ---
 
 ##Hypothesis Tree
+
+### Tree
+
+**Decision logic:** The firewall was the first suspect because the logs showed explicit block rules. Disabling *pf* entirely via *pfctl -d* was a deliberate isolation step - not a fix attempt. When connectivity didn't restore, it conclusively proved the packet drop was happening for a routing reason, not a policy reason. This is a critical distinction: logs showing "block" can mean firewall policy *or* the firewall matching traffic that was already going to fail due to routing.
+
+---
+
+## Investigation Steps
+
+### Step 1 - Verify L2 is actually up
+
+(ip a & ip neigh)
+
+**Why:** Confirm the problem scope. If L2 were broken, everything downstream would be moot. 'ip neigh confirming 'REACHABLE' means ARP resolved successfully - the NIC and switch path are functional. This scopes the problem to L3 and above.
+
+### Step 2 - Confirm the failure is bidirectional
+
+(ping 8.8.8.8 & 10.x.x.1)
+
+**Why:** Differentiates between "can't reach internet" (NAT/routing issue at egress) vs. "can't even reach the next hop" (local routing or firewall problem). Losing both means the issue is between the VM and its gateway - not an upstream provider problem.
+
+### Step 3 - Check pfSense filter logs
+
+(Logs)
+
+**Why:** pfSense was logging explicit block actions on the VLAN 31 interface for traffic originating from the VM. This looked like a firewall rule misconfiguration - the obvious suspect after a config change. However, the presence of a match/block log entry doesn't confirm the firewall *is* the problem; it confirms the firewall *saw* the traffic and made a decision. The decision could be correct behavior in response to a routing anomaly.
+
+### Step 4 - Eliminate the firewall as root cause
+
+(pfctl -d)
+
+**Why:** Rather than spending time auditing firewall rules, disabling 'pf' entirely is a faster binary test. If connectivity restores → firewall rules are the issue. If it doesn't → the firewall is a symptom or observer, not the cause.
+
+**Result:** No change in connectivity. Firewall eliminated. This is a production-dangerous step that must be reversed immediately, but as a diagnostic it's definitive.
+
+### Step 5 - Packet-level verification with tcpdump
