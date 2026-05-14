@@ -67,3 +67,71 @@ The presence of L2 reachability with L3 failure immediately ruled out physical/l
 **Result:** No change in connectivity. Firewall eliminated. This is a production-dangerous step that must be reversed immediately, but as a diagnostic it's definitive.
 
 ### Step 5 - Packet-level verification with tcpdump
+
+(tcpdump)
+
+**Why:** Confirms whether ICMP requests are actually leaving the VM and arriving at the router interface. Seeing ICMP echo requests with no replies means packets are reaching the destination but responses are not being sent back - pointing to a reply path problem, not a send-path problem. This is the classic asymmetric routing signature.
+
+---
+
+### Step 6 - Interrogate the routing table on pfSense
+
+(route get vm ip)
+
+**Why:** This is the somking gun. 'route get' performs a FIB lookup for a specific destination - it shows you exactly what the kernel will do with a packet destined for that address. The router was forwarding traffic destined for the VM's subnet (10.x.x.x) through 'vtnet0' (WAN) via a gateway of '10.x.x.25' - a host that doesn't exist. The 'Host' and 'Static' flags confirm this was a manually configured, specific-host static route overriding the directly-connected route. This creates asymmetric routing: traffic enters on vtnet1.31, but replies attempt to exit via vtnet0 through a phantom gateway.
+
+---
+
+### Step 7 - Remove the bad static host route
+
+(route delete)
+
+(post-fix output)
+
+**Result:** 'ping 10.x.x.1' works. L3 to gateway restored.
+
+---
+
+### Step 8 - Diagnose remaining internet failure on pfSense
+
+(ping & route get 8.8.8.8)
+
+**Output:**
+
+(output)
+
+**Why:** The default gateway on pfSense was also pointing at '10.x.x.25'. 'arp -a' confirmed the entry for '.25' was '(incomplete) expired' - the MAC was never resolved because the host doesn't exist on that segment. The router had no valid path to the internet.
+
+---
+
+### Step 9 - Verify the phantom gateway via ARP
+
+(arp -a)
+
+**Output:**
+
+(output)
+
+**Why:** An incomplete ARP entry with 'expired' status is definitive proof that '10.x.x.25' has never responded to ARP - it doesn't exist. '10.x.x.1' is the actual gateway on that segment. This was the correct default gateway that pfSense should have been using.
+
+---
+
+### Step 10 - Fix pfSense default gateway
+
+(route delete default)
+
+(ping 8.8.8.8)
+
+---
+
+### Step 11 - Diagnose remaining VM internet failure
+
+(tcpdump)
+
+**Output:**
+
+**Why:** Traffic is reaching the WAN interface but sourcing from '10.x.x.50' instead of the pfSense WAN IP. This means NAT is not being applied - or the wrong NAT rule is matching. The outbound NAT table had an entry referencing the system's internal IP from a stale state built around the broken routing path.
+
+---
+
+### Step 12 - Clear stale firewall state and fix NAT
