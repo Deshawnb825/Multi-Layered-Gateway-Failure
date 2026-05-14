@@ -182,3 +182,36 @@ Because the state table preserved the broken path, outbound NAT was translating 
 ---
 
 ## Resolution Steps
+
+1. 'pfctl -d' → confirmed firewall not root cause → re-enabled pf
+2. 'route get 10.x.x.50' → identified bad static host route
+3. 'route delete 10.x.x.50' → restored correct path via vtnet1.31
+4. 'arp -a' → confirmed '10.x.x.25' doesn't exist
+5. 'route delete default && route add default 10.x.x.1' → fixed pfSense internet routing
+6. Deleted static route from pfSense GUI → removed the blackhole route permanently
+7. Cleared pfSense state table → forced NAT to rebuild with correct paths
+8. Verified end-to-end: VM 'ping 8.8.8.8' → 0% packet loss
+
+---
+
+## Lessons Learned
+
+**1. GUI-only access is a single point of failure**
+
+The initial loss of GUI access was treated as the problem. It was a symptom. Operators who rely exclusively on web GUIs lose access to the system exactly when they need it most - during a misconfiguration. Console (out-of-band) access is not optional; it's the only reliable recovery path when the management plane is broken.
+
+**2. Filter logs showing "block" don't mean the firewall is the root cuase**
+
+A firewall blocking traffic can be responding correctly to an upstream routing anomaly. 'pfctl -d' is the fastest way to falsify the firewall hypothesis - if disabling pf doesn't fix it, move down the stack.
+
+**3. 'route get <host>' is more diagnostic than 'netstat -rn'**
+
+'netstat -rn' shows the routing table. 'route get' shows what the kernel will *actually do* with a specific destination after longest-prefic-match resolution. These are different. A '/32' host route won't be obvious in a routing table overview but will instantly surface in 'route get' output.
+
+**4. Stateful firewalls will preserve broken behavior after you fix the config**
+
+pfSense (and any stateful device - ASA, iptables conntrack, etc.) builds state around the path that was active when the flow was established. Changing routing or NAT rules doesn't retrocatively fix existing state entries. After a routing change, state tables must be cleared of flows allowed to expire.
+
+**5. An "incomplete" ARP entry is a definitive diagnostic signal**
+
+'(incomplete) expired' in 'arp -a' output means the kernel sent ARP requests that were never answered. This isn't ambiguous - the host doesn't exist at L2. If your default gateway shows incomplete ARP, you have no internet, regardless of what the routing table says.
