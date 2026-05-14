@@ -135,3 +135,50 @@ The presence of L2 reachability with L3 failure immediately ruled out physical/l
 ---
 
 ### Step 12 - Clear stale firewall state and fix NAT
+
+- Deleted the bad static route from pfSense GUI (Static Routes → Removed blackhole entry pointing to '10.x.x.25')
+- Changed default gateway to correct host
+- pfSense state table had preserved flows built around the broken path - these needed to be cleared
+
+**Result:** Full end-to-end connectivity restored. 'ping 8.8.8.8' from VM → 0% packet loss.
+
+---
+
+## Key Findings
+
+| Layer | Finding |
+| --- | --- |
+| L2 | Healthy throughout - this was never the issue |
+| L3 (VM→Router) | Bad static host route on pfSense: 10.x.x.50 → 10.x.x.25 via vtnet0' |
+| L3 (Router→Internet) | pfSense default gateway pointed at non-existent host '10.x.x.25' |
+| Firewall | 'pf' logs showed blcok - but this was a symptom of asymmetric routing, not the cause |
+| NAT | Outbound NAT was hitting stale state table entries built around the broken path |
+| State Table | pfSense preserved broken flow state even after routing was corrected |
+
+---
+
+## Root Cause Analysis
+
+This was a **four-layer compounding failure**:
+
+**1. Bad static host route (VM→Router path)**
+
+A specific '/32' static host route for '10.x.x.50' was installed on pfSense pointing to '10.x.x.25' via 'vtnet0'. Because host routes have longer prefix matches than network routes, this overrode the directly-connected route for '10.x.x.0/24' via 'vtnet1.31'. Every packet destined for that host was sent out the WAN toward a non-existent next-hop, creating a classic asymmetric routing loop.
+
+**2. Invalid default gateway**
+
+The pfSense default gateway was also configured to use '10.x.x.25' - a host that has never existed on that segment (confirmed via expired ARP). This silently broke all outbound internet routing at the router level, independent of the VM problem.
+
+**3. pfSense state table preserving broken flows**
+
+pfSense's stateful firewall built connection state entries around the broken routing path. Even after the routing was corrected, the state table continued to enforce old forwarding decisions for existing flows - including NAT translations that were sending traffic with the wrong source IP. This is expected stateful firewall behavior, but it's operationally dangerous when the underlying path changes.
+
+**4. Nat applied to wrong source**
+
+Because the state table preserved the broken path, outbound NAT was translating flows to use '10.x.x.50' (an internal IP) instead of the WAN IP, causing internet traffic to be forwarded upstream with a non-routable source address.
+
+**Why this is hard to debug:** Each layer appeared to explain the symptom independently. The firewall logs showed blocks, the routing table looked plausible at first glance. NAT appeared configured. Any single-hypothesis debugger would have spent time on firewall rules, then give up, rather than following the chain through all 4 layers. 
+
+---
+
+## Resolution Steps
